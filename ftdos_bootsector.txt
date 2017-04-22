@@ -1,0 +1,144 @@
+
+Jasmin FTDOS boot sector disassembly
+by Peter Gordon (pete@petergordon.org.uk)
+
+          ***************************************
+
+start	      0400  78        SEI              ; Disable interrupts
+              0401  A9 7F     LDA #$7F         ; Disable VIA interrupts
+              0403  8D 0E 03  STA $030E        
+              0406  A9 01     LDA #$01         ; Enable overlay RAM
+              0408  8D FA 03  STA $03FA        
+              040B  A9 00     LDA #$00         ; Enable BASIC ROM
+              040D  8D FB 03  STA $03FB        
+              0410  85 04     STA $04          ; Set LSB of read address to $00
+              0412  8D F4 03  STA $03F4        ; Issue a restore command
+              0415  A2 02     LDX #$02         ; End at track #2 (SMC operand for instruction at $0452)
+              0417  AC 30 02  LDY $0230        ; Test for ROM v1.0
+              041A  C0 40     CPY #$40         
+              041C  D0 04     BNE .rom11       ; ROM 1.1? Stick with tracks 0 to 2
+              041E  A9 04     LDA #$04         ; We want track #4
+              0420  A2 06     LDX #$06         ; End at track #6
+.rom11        0422  85 01     STA $01          ; Store start track number
+              0424  8E 53 04  STX $0453        ; Modify end track number check at $452
+              0427  A9 AC     LDA #>irqvector  ; Set up IRQ vector to $04AC
+              0429  8D FE FF  STA $FFFE        
+              042C  A9 04     LDA #<irqvector
+              042E  8D FF FF  STA $FFFF        
+              0431  A9 03     LDA #$03         ; We want sector #3
+              0433  85 02     STA $02          
+              0435  A9 0F     LDA #$0F         ; We want to read 15 sectors
+              0437  85 06     STA $06          
+              0439  A9 C0     LDA #$C0         ; Set MSB of read address to $C0
+              043B  85 05     STA $05          ; (so reading 15 sectors, starting
+              043D  20 64 04  JSR readsectors  ; at sector 3, to $C000 onwards)
+              0440  E6 01     INC $01          ; Now read track #1
+.trackloop    0442  A9 11     LDA #$11         ; We want to read 17 sectors
+.trackloop2   0444  85 06     STA $06          
+              0446  A9 01     LDA #$01         ; We want sector #1
+              0448  85 02     STA $02          
+              044A  20 64 04  JSR readsectors  ; Lets do it!
+              044D  E6 01     INC $01          ; Increment track number
+              044F  AD F5 03  LDA $03F5        ; Read track register
+              0452  C9 02     CMP #$02         ; At track 2 or more?
+              0454  90 EC     BCC .trackloop   ; No, read the whole track
+              0456  AD F6 03  LDA $03F6        ; Get the sector number
+              0459  C9 0D     CMP #$0D         ; Did we just read a whole track?
+              045B  90 04     BCC $0461        ; No, we must have finished
+              045D  A9 0B     LDA #$0B         ; Yes, we need to read 11 more sectors
+              045F  D0 E3     BNE .trackloop2
+              0461  4C F8 D4  JMP $D4F8        ; Jump to the FTDOS entry point
+
+          ***************************************
+
+readsectors   0464  A9 05     LDA #$05         ; Set up retry count
+              0466  85 00     STA $00          
+              0468  20 C0 04  JSR seektrack    ; Seek track (track # is at $01)
+              046B  A5 06     LDA $06          
+              046D  85 03     STA $03          
+              046F  20 F7 04  JSR waitbusy
+              0472  A5 02     LDA $02          ; Get sector number
+              0474  8D F6 03  STA $03F6        
+              0477  AD F7 03  LDA $03F7        ; Clear intrq
+              047A  A9 90     LDA #$90         ; Read sectors command
+              047C  A0 00     LDY #$00         ; Initialise read counter
+              047E  8D F4 03  STA $03F4        ; Read multiple sectors
+              0481  58        CLI              ; Enable interrupts
+              0482  A6 03     LDX $03          
+              0484  F0 1C     BEQ $04A2        
+.checkloop    0486  AE F4 03  LDX $03F4        ; Get status
+              0489  E0 81     CPX #$81         ; Busy and not ready bits set?
+              048B  90 26     BCC rsectorsfail ; No.. something went wrong
+              048D  C0 00     CPY #$00         ; Read any bytes yet?
+              048F  F0 F5     BEQ .checkloop   ; No, check again
+.sectorloop   0491  C0 00     CPY #$00         ; Yes. Read a whole sector?
+              0493  D0 FC     BNE .sectorloop  ; No, keep waiting
+              0495  AD F4 03  LDA $03F4        ; Yes. Check for errors
+              0498  29 1C     AND #$1C         
+              049A  D0 17     BNE rsectorsfail ; branch if there were any
+              049C  E6 05     INC $05          ; Increment MSB of target addr
+              049E  C6 03     DEC $03          ; Decrement number of sectors to read
+              04A0  D0 E4     BNE .checkloop   ; More sectors to read
+
+          ***************************************
+
+forceint      04A2  78        SEI              ; Disable interrupts
+              04A3  A9 D0     LDA #$D0         ; Issue a force interrupt command
+              04A5  8D F4 03  STA $03F4        
+              04A8  AD F7 03  LDA $03F7        ; Clear intrq
+              04AB  60        RTS              
+
+          ***************************************
+
+irqvector     04AC  AD F7 03  LDA $03F7        ; Read a byte from disk
+              04AF  91 04     STA ($04),Y      ; Write it to memory
+              04B1  C8        INY              ; Increment counter
+              04B2  40        RTI              
+
+          ***************************************
+
+rsectorsfail  04B3  20 A2 04  JSR forceint     ; Send force interrupt command
+              04B6  20 C0 04  JSR seektrack    ; Seek the track again
+              04B9  C6 00     DEC $00          ; Decrement retry count
+              04BB  D0 BA     BNE $0477        ; More retries?
+              04BD  4C E1 CF  JMP $CFE1        ; No, jump to CFE1 (which may be uninitialised)
+
+          ***************************************
+
+seektrack     04C0  A0 05     LDY #$05         ; Set up retry count
+.retry        04C2  88        DEY              ; Decrement retry count
+              04C3  F0 F8     BEQ $04BD        ; Give up!
+
+	      04C5  20 F7 04  JSR waitbusy     ; Wait for disk to be ready
+              04C8  A5 01     LDA $01          ; Get track number
+              04CA  C9 29     CMP #$29         ; Track number < $29?
+              04CC  90 07     BCC .useside0    ; If so, read from side 0
+              04CE  D8        CLD              
+              04CF  E9 29     SBC #$29         ; Otherwise, subtrackt $29 from track number
+              04D1  A2 01     LDX #$01         ; and read from side 1
+              04D3  D0 02     BNE .setside
+.useside0     04D5  A2 00     LDX #$00         ; We're using side 0
+.setside      04D7  8E F8 03  STX $03F8        ; Set disk side
+              04DA  8E 0C C0  STX $C00C        
+              04DD  8D F7 03  STA $03F7        ; Set data register
+              04E0  A9 14     LDA #$14         ; Issue seek command
+              04E2  8D F4 03  STA $03F4        
+              04E5  20 F7 04  JSR $04F7        ; Wait for seek command to complete
+              04E8  AD F4 03  LDA $03F4        ; Get status
+              04EB  29 18     AND #$18         ; Seek or CRC error?
+              04ED  F0 07     BEQ .finished    ; No, its all good
+              04EF  A9 00     LDA #$00         ; Issue a restore command
+              04F1  8D F4 03  STA $03F4        
+              04F4  F0 CC     BEQ .retry       ; Try again
+.finished     04F6  60        RTS              
+
+          ***************************************
+
+waitbusy      04F7  AD F4 03  LDA $03F4        ; Read disk status
+              04FA  4A        LSR              
+              04FB  B0 FA     BCS waitbusy     ; Loop while busy bit is set
+              04FD  60        RTS              
+
+          ***************************************
+
+	      04FE  55 55     'UU'
